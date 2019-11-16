@@ -139,6 +139,7 @@ class StatusBar(Widget):  # pylint: disable=too-many-instance-attributes
 
     def _get_left_part(self, bar):  # pylint: disable=too-many-branches,too-many-statements
         left = bar.left
+        self.column.target = self.fm.thisdir
 
         if self.column is not None and self.column.target is not None\
                 and self.column.target.is_directory:
