@@ -1,12 +1,11 @@
-ranger 1.9.2
+ranger 1.9.3
 ============
 
 <img src="https://ranger.github.io/ranger_logo.png" width="150">
 
 [![Build Status](https://travis-ci.org/ranger/ranger.svg?branch=master)](https://travis-ci.org/ranger/ranger)
-<a href="https://repology.org/metapackage/ranger/versions">
-  <img src="https://repology.org/badge/latest-versions/ranger.svg" alt="latest packaged version(s)">
-</a>
+<a href="https://repology.org/metapackage/ranger/versions"><img src="https://repology.org/badge/latest-versions/ranger.svg" alt="latest packaged version(s)"></a>
+[![Donate via Liberapay](https://img.shields.io/liberapay/patrons/ranger)](https://liberapay.com/ranger)
 
 ranger is a console file manager with VI key bindings.  It provides a
 minimalistic and nice curses interface with a view on the directory hierarchy.
@@ -82,34 +81,44 @@ For general usage:
 * `file` for determining file types
 * `chardet` (Python package) for improved encoding detection of text files
 * `sudo` to use the "run as root" feature
-* `python-bidi` to display right-to-left file names correctly (Hebrew, Arabic)
+* `python-bidi` (Python package) to display right-to-left file names correctly
+  (Hebrew, Arabic)
 
 For enhanced file previews (with `scope.sh`):
 
 * `img2txt` (from `caca-utils`) for ASCII-art image previews
-* `w3mimgdisplay`, `ueberzug`, `kitty`, `terminology` or `urxvt` for image
-  previews
-* `convert` (from `imagemagick`) to auto-rotate images and for SVG previews
-* `ffmpegthumbnailer` for video thumbnails
-* `highlight` or `pygmentize` for syntax highlighting of code
+* `w3mimgdisplay`, `ueberzug`, `mpv`, `iTerm2`, `kitty`, `terminology` or `urxvt` for image previews
+* `convert` (from `imagemagick`) to auto-rotate images and for image previews
+* `rsvg-convert` (from [`librsvg`](https://wiki.gnome.org/Projects/LibRsvg))
+  for SVG previews
+* `ffmpeg`, or `ffmpegthumbnailer` for video thumbnails
+* `highlight`, `bat` or `pygmentize` for syntax highlighting of code
 * `atool`, `bsdtar`, `unrar` and/or `7z` to preview archives
-* `bsdtar`, `tar`, `unrar` and/or `unzip` to preview archives as their first
-  image
+* `bsdtar`, `tar`, `unrar`, `unzip` and/or `zipinfo` (and `sed`) to preview
+  archives as their first image
 * `lynx`, `w3m` or `elinks` to preview html pages
-* `pdftotext` or `mutool` for textual `pdf` previews, `pdftoppm` to preview as
-  image
+* `pdftotext` or `mutool` (and `fmt`) for textual `pdf` previews, `pdftoppm` to
+  preview as image
 * `djvutxt` for textual DjVu previews, `ddjvu` to preview as image
 * `calibre` or `epub-thumbnailer` for image previews of ebooks
 * `transmission-show` for viewing BitTorrent information
 * `mediainfo` or `exiftool` for viewing information about media files
 * `odt2txt` for OpenDocument text files (`odt`, `ods`, `odp` and `sxw`)
 * `python` or `jq` for JSON files
+* `sqlite3` for listing tables in SQLite database (and optionally `sqlite-utils` for fancier box drawing.)
+* `jupyter nbconvert` for Jupyter Notebooks
 * `fontimage` for font previews
+* `openscad` for 3D model previews (`stl`, `off`, `dxf`, `scad`, `csg`)
+* `draw.io` for [draw.io](https://app.diagrams.net/) diagram previews
+  (`drawio` extension)
 
 Installing
 ----------
 Use the package manager of your operating system to install ranger.
-You can also install ranger through PyPI: ```pip install ranger-fm```.
+You can also install ranger through PyPI: `pip install ranger-fm`.
+However, it is recommended to use [`pipx`](https://pypa.github.io/pipx/) instead
+(to benefit from isolated environments). Use
+`pipx run --spec ranger-fm ranger` to install and run ranger in one step.
 
 <details>
   <summary>
@@ -165,5 +174,5 @@ Going Further
 Community
 ---------------
 For help, support, or if you just want to hang out with us, you can find us here:
-* **IRC**: channel **#ranger** on [freenode](https://freenode.net/kb/answer/chat)
+* **IRC**: channel **#ranger** on [Libera.Chat](https://libera.chat/guides/connect). Don't have an IRC client? Join us via the [webchat](https://web.libera.chat/#ranger)!
 * **Reddit**: [r/ranger](https://www.reddit.com/r/ranger/)

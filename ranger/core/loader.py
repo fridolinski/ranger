@@ -3,14 +3,14 @@
 
 from __future__ import (absolute_import, division, print_function)
 
-from collections import deque
-from subprocess import Popen, PIPE
-from time import time, sleep
+import errno
 import math
 import os.path
 import select
-import sys
-import errno
+from collections import deque
+from io import open
+from subprocess import Popen, PIPE
+from time import time, sleep
 
 try:
     import chardet  # pylint: disable=import-error
@@ -18,9 +18,11 @@ try:
 except ImportError:
     HAVE_CHARDET = False
 
+from ranger import PY3
 from ranger.core.shared import FileManagerAware
-from ranger.ext.signals import SignalDispatcher
 from ranger.ext.human_readable import human_readable
+from ranger.ext.safe_path import get_safe_path
+from ranger.ext.signals import SignalDispatcher
 
 
 class Loadable(object):
@@ -51,12 +53,14 @@ class Loadable(object):
 class CopyLoader(Loadable, FileManagerAware):  # pylint: disable=too-many-instance-attributes
     progressbar_supported = True
 
-    def __init__(self, copy_buffer, do_cut=False, overwrite=False, dest=None):
+    def __init__(self, copy_buffer, do_cut=False, overwrite=False, dest=None,
+                 make_safe_path=get_safe_path):
         self.copy_buffer = tuple(copy_buffer)
         self.do_cut = do_cut
         self.original_copy_buffer = copy_buffer
         self.original_path = dest if dest is not None else self.fm.thistab.path
         self.overwrite = overwrite
+        self.make_safe_path = make_safe_path
         self.percent = 0
         if self.copy_buffer:
             self.one_file = self.copy_buffer[0]
@@ -108,7 +112,8 @@ class CopyLoader(Loadable, FileManagerAware):  # pylint: disable=too-many-instan
                         self.fm.tags.dump()
                 n = 0
                 for n in shutil_g.move(src=fobj.path, dst=self.original_path,
-                                       overwrite=self.overwrite):
+                                       overwrite=self.overwrite,
+                                       make_safe_path=self.make_safe_path):
                     self.percent = ((done + n) / size) * 100.
                     yield
                 done += n
@@ -125,6 +130,7 @@ class CopyLoader(Loadable, FileManagerAware):  # pylint: disable=too-many-instan
                             dst=os.path.join(self.original_path, fobj.basename),
                             symlinks=True,
                             overwrite=self.overwrite,
+                            make_safe_path=self.make_safe_path,
                     ):
                         self.percent = ((done + n) / size) * 100.
                         yield
@@ -132,7 +138,8 @@ class CopyLoader(Loadable, FileManagerAware):  # pylint: disable=too-many-instan
                 else:
                     n = 0
                     for n in shutil_g.copy2(fobj.path, self.original_path,
-                                            symlinks=True, overwrite=self.overwrite):
+                                            symlinks=True, overwrite=self.overwrite,
+                                            make_safe_path=self.make_safe_path):
                         self.percent = ((done + n) / size) * 100.
                         yield
                     done += n
@@ -164,15 +171,20 @@ class CommandLoader(  # pylint: disable=too-many-instance-attributes
         self.kill_on_pause = kill_on_pause
         self.popenArgs = popenArgs  # pylint: disable=invalid-name
 
-    def generate(self):  # pylint: disable=too-many-branches,too-many-statements
-        py3 = sys.version_info[0] >= 3
+    def generate(self):
+        # pylint: disable=too-many-branches,too-many-statements
+        # TODO: Check whether we can afford to wait for processes and use a
+        #       with-statement for Popen.
+        # pylint: disable=consider-using-with
         popenargs = {} if self.popenArgs is None else self.popenArgs
         popenargs['stdout'] = popenargs['stderr'] = PIPE
-        popenargs['stdin'] = PIPE if self.input else open(os.devnull, 'r')
+        popenargs['stdin'] = (
+            PIPE if self.input else open(os.devnull, 'r', encoding="utf-8")
+        )
         self.process = process = Popen(self.args, **popenargs)
         self.signal_emit('before', process=process, loader=self)
         if self.input:
-            if py3:
+            if PY3:
                 import io
                 stdin = io.TextIOWrapper(process.stdin)
             else:
@@ -180,7 +192,7 @@ class CommandLoader(  # pylint: disable=too-many-instance-attributes
             try:
                 stdin.write(self.input)
             except IOError as ex:
-                if ex.errno != errno.EPIPE and ex.errno != errno.EINVAL:
+                if ex.errno not in (errno.EPIPE, errno.EINVAL):
                     raise
             stdin.close()
         if self.silent and not self.read:  # pylint: disable=too-many-nested-blocks
@@ -206,7 +218,7 @@ class CommandLoader(  # pylint: disable=too-many-instance-attributes
                         robjs = robjs[0]
                         if robjs == process.stderr:
                             read = robjs.readline()
-                            if py3:
+                            if PY3:
                                 read = safe_decode(read)
                             if read:
                                 self.fm.notify(read, bad=True)
@@ -221,7 +233,7 @@ class CommandLoader(  # pylint: disable=too-many-instance-attributes
                     sleep(0.03)
             if not self.silent:
                 for line in process.stderr:
-                    if py3:
+                    if PY3:
                         line = safe_decode(line)
                     self.fm.notify(line, bad=True)
             if self.read:
@@ -229,7 +241,7 @@ class CommandLoader(  # pylint: disable=too-many-instance-attributes
                 if read:
                     read_stdout += read
             if read_stdout:
-                if py3:
+                if PY3:
                     read_stdout = safe_decode(read_stdout)
                 self.stdout_buffer += read_stdout
         self.finished = True

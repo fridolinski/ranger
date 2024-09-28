@@ -9,6 +9,7 @@ import threading
 import curses
 from subprocess import CalledProcessError
 
+from ranger.ext.get_executables import get_executables
 from ranger.ext.keybinding_parser import KeyBuffer, KeyMaps, ALT_KEY
 from ranger.ext.lazy_property import lazy_property
 from ranger.ext.signals import Signal
@@ -19,6 +20,12 @@ from .mouse_event import MouseEvent
 
 
 MOUSEMASK = curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION
+
+# This escape is not available with a capname from terminfo unlike
+# tsl (to_status_line), so it's hardcoded here. It's used just like tsl,
+# but it sets the icon title (WM_ICON_NAME) instead of the window title
+# (WM_NAME).
+ESCAPE_ICON_TITLE = '\033]1;'
 
 _ASCII = ''.join(chr(c) for c in range(32, 127))
 
@@ -37,10 +44,20 @@ def _setup_mouse(signal):
         # starts curses again, (e.g. running a ## file by clicking on its
         # preview) and the next key is another mouse click, the bstate of this
         # mouse event will be invalid.  (atm, invalid bstates are recognized
-        # as scroll-down, so this avoids an errorneous scroll-down action)
+        # as scroll-down, so this avoids an erroneous scroll-down action)
         curses.ungetmouse(0, 0, 0, 0, 0)
     else:
         curses.mousemask(0)
+
+
+def _in_tmux():
+    return (os.environ.get("TMUX", "")
+            and 'tmux' in get_executables())
+
+
+def _in_screen():
+    return ('screen' in os.environ.get("TERM", "")
+            and 'screen' in get_executables())
 
 
 class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-methods
@@ -64,8 +81,10 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
         self.status = None
         self.console = None
         self.pager = None
+        self.multiplexer = None
         self._draw_title = None
         self._tmux_automatic_rename = None
+        self._multiplexer_title = None
         self.browser = None
 
         if fm is not None:
@@ -103,7 +122,7 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
 
         self.settings.signal_bind('setopt.mouse_enabled', _setup_mouse)
         self.settings.signal_bind('setopt.freeze_files', self.redraw_statusbar)
-        _setup_mouse(dict(value=self.settings.mouse_enabled))
+        _setup_mouse({"value": self.settings.mouse_enabled})
 
         if not self.is_set_up:
             self.is_set_up = True
@@ -112,20 +131,10 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
             self.win.refresh()
             self._draw_title = curses.tigetflag('hs')  # has_status_line
 
-            # Save tmux setting `automatic-rename`
-            if self.settings.update_tmux_title and 'TMUX' in os.environ:
-                try:
-                    self._tmux_automatic_rename = check_output(
-                        ['tmux', 'show-window-options', '-v', 'automatic-rename']).strip()
-                except CalledProcessError:
-                    self._tmux_automatic_rename = None
-
         self.update_size()
         self.is_on = True
 
-        if self.settings.update_tmux_title and 'TMUX' in os.environ:
-            sys.stdout.write("\033kranger\033\\")
-            sys.stdout.flush()
+        self.handle_multiplexer()
 
         if 'vcsthread' in self.__dict__:
             self.vcsthread.unpause()
@@ -147,7 +156,7 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
         except curses.error:
             pass
         if self.settings.mouse_enabled:
-            _setup_mouse(dict(value=False))
+            _setup_mouse({"value": False})
         curses.endwin()
         self.is_on = False
 
@@ -174,19 +183,7 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
             del self.__dict__['vcsthread']
         DisplayableContainer.destroy(self)
 
-        # Restore tmux setting `automatic-rename`
-        if self.settings.update_tmux_title and 'TMUX' in os.environ:
-            if self._tmux_automatic_rename:
-                try:
-                    check_output(['tmux', 'set-window-option',
-                                  'automatic-rename', self._tmux_automatic_rename])
-                except CalledProcessError:
-                    pass
-            else:
-                try:
-                    check_output(['tmux', 'set-window-option', '-u', 'automatic-rename'])
-                except CalledProcessError:
-                    pass
+        self.restore_multiplexer_name()
 
         self.suspend()
 
@@ -238,11 +235,11 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
         for key in keys:
             self.handle_key(key)
 
-    def handle_input(self):
+    def handle_input(self):  # pylint: disable=too-many-branches
         key = self.win.getch()
         if key == curses.KEY_ENTER:
             key = ord('\n')
-        if key == 27 or (key >= 128 and key < 256):
+        if key == 27 or (128 <= key < 256):
             # Handle special keys like ALT+X or unicode here:
             keys = [key]
             previous_load_mode = self.load_mode
@@ -277,6 +274,9 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
                 else:
                     if not self.fm.input_is_blocked():
                         self.handle_key(key)
+            elif key == -1 and not os.isatty(sys.stdin.fileno()):
+                # STDIN has been closed
+                self.fm.exit()
 
     def setup(self):
         """Build up the UI by initializing widgets."""
@@ -369,28 +369,36 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
         self.win.touchwin()
         DisplayableContainer.draw(self)
         if self._draw_title and self.settings.update_title:
-            cwd = self.fm.thisdir.path
-            if self.settings.tilde_in_titlebar \
-               and (cwd == self.fm.home_path
-                    or cwd.startswith(self.fm.home_path + "/")):
-                cwd = '~' + cwd[len(self.fm.home_path):]
-            if self.settings.shorten_title:
-                split = cwd.rsplit(os.sep, self.settings.shorten_title)
-                if os.sep in split[0]:
-                    cwd = os.sep.join(split[1:])
+            if self.fm.thisdir:
+                cwd = self.fm.thisdir.path
+                if self.settings.tilde_in_titlebar \
+                   and (cwd == self.fm.home_path
+                        or cwd.startswith(self.fm.home_path + "/")):
+                    cwd = '~' + cwd[len(self.fm.home_path):]
+                if self.settings.shorten_title:
+                    split = cwd.rsplit(os.sep, self.settings.shorten_title)
+                    if os.sep in split[0]:
+                        cwd = os.sep.join(split[1:])
+            else:
+                cwd = "not accessible"
             try:
                 fixed_cwd = cwd.encode('utf-8', 'surrogateescape'). \
                     decode('utf-8', 'replace')
-                fmt_tup = (
-                    curses.tigetstr('tsl').decode('latin-1'),
-                    fixed_cwd,
-                    curses.tigetstr('fsl').decode('latin-1'),
+                titlecap = curses.tigetstr('tsl')
+                escapes = (
+                    [titlecap.decode("latin-1")]
+                    if titlecap is not None
+                    else [] + [ESCAPE_ICON_TITLE]
                 )
+                belcap = curses.tigetstr('fsl')
+                bel = belcap.decode('latin-1') if belcap is not None else ""
+                fmt_tups = [(e, fixed_cwd, bel) for e in escapes]
             except UnicodeError:
                 pass
             else:
-                sys.stdout.write("%sranger:%s%s" % fmt_tup)
-                sys.stdout.flush()
+                for fmt_tup in fmt_tups:
+                    sys.stdout.write("%sranger:%s%s" % fmt_tup)
+                    sys.stdout.flush()
 
         self.win.refresh()
 
@@ -473,6 +481,67 @@ class UI(  # pylint: disable=too-many-instance-attributes,too-many-public-method
             self.titlebar.throbber = type(self.titlebar).throbber
         else:
             self.titlebar.throbber = string
+
+    # Handles window renaming behaviour of the terminal multiplexers
+    # GNU Screen and Tmux
+    def handle_multiplexer(self):
+        if (self.settings.update_tmux_title and not self._multiplexer_title):
+            try:
+                if _in_tmux():
+                    # Stores the automatic-rename setting
+                    # prints out a warning if allow-rename isn't set in tmux
+                    try:
+                        tmux_allow_rename = check_output(
+                            ['tmux', 'show-window-options', '-v',
+                             'allow-rename']).strip()
+                    except CalledProcessError:
+                        tmux_allow_rename = 'off'
+                    if tmux_allow_rename == 'off':
+                        self.fm.notify('Warning: allow-rename not set in Tmux!',
+                                       bad=True)
+                    else:
+                        self._multiplexer_title = check_output(
+                            ['tmux', 'display-message', '-p', '#W']).strip()
+                        self._tmux_automatic_rename = check_output(
+                            ['tmux', 'show-window-options', '-v',
+                             'automatic-rename']).strip()
+                        if self._tmux_automatic_rename == 'on':
+                            check_output(['tmux', 'set-window-option',
+                                          'automatic-rename', 'off'])
+                elif _in_screen():
+                    # Stores the screen window name before renaming it
+                    # gives out a warning if $TERM is not "screen"
+                    self._multiplexer_title = check_output(
+                        ['screen', '-Q', 'title']).strip()
+            except CalledProcessError:
+                self.fm.notify("Couldn't access previous multiplexer window"
+                               " name, won't be able to restore.",
+                               bad=False)
+            if not self._multiplexer_title:
+                self._multiplexer_title = os.path.basename(
+                    os.environ.get("SHELL", "shell"))
+
+            sys.stdout.write("\033kranger\033\\")
+            sys.stdout.flush()
+
+    # Restore window name
+    def restore_multiplexer_name(self):
+        if self._multiplexer_title:
+            try:
+                if _in_tmux():
+                    if self._tmux_automatic_rename:
+                        check_output(['tmux', 'set-window-option',
+                                      'automatic-rename',
+                                      self._tmux_automatic_rename])
+                    else:
+                        check_output(['tmux', 'set-window-option', '-u',
+                                      'automatic-rename'])
+            except CalledProcessError:
+                self.fm.notify("Could not restore multiplexer window name!",
+                               bad=True)
+
+            sys.stdout.write("\033k{0}\033\\".format(self._multiplexer_title))
+            sys.stdout.flush()
 
     def hint(self, text=None):
         self.status.hint = text
